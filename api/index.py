@@ -27,6 +27,15 @@ app.add_middleware(
 )
 
 
+def _api_root_payload() -> dict[str, str]:
+    return {
+        "status": "ok",
+        "message": "Credit Portfolio AI Analyst API is running.",
+        "ui": "/",
+        "health": "/api/health",
+    }
+
+
 class AnalyzeRequest(BaseModel):
     model: str = Field(min_length=1)
     seed: int = 42
@@ -61,6 +70,18 @@ def _server_api_key(provider: str) -> str:
 @app.get("/api/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/")
+def root() -> dict[str, str]:
+    return _api_root_payload()
+
+
+@app.get("/api")
+@app.get("/api/")
+@app.get("/api/index.py")
+def api_root() -> dict[str, str]:
+    return _api_root_payload()
 
 
 @app.get("/data")
