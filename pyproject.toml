@@ -1,0 +1,9 @@
+[project]
+name = "robo-credit-analyst"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+    "openai>=2.21.0",
+    "pandas>=2.3.3",
+    "streamlit>=1.54.0",
+]
