@@ -1,8 +1,10 @@
 import os
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from credit_engine import (
@@ -25,6 +27,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _static_file_response(filename: str) -> FileResponse:
+    path = PROJECT_ROOT / filename
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"Static file not found: {filename}")
+    return FileResponse(path)
 
 
 def _api_root_payload() -> dict[str, str]:
@@ -73,8 +85,23 @@ def health() -> dict[str, str]:
 
 
 @app.get("/")
-def root() -> dict[str, str]:
-    return _api_root_payload()
+def root() -> FileResponse:
+    return _static_file_response("index.html")
+
+
+@app.get("/index.html")
+def index_page() -> FileResponse:
+    return _static_file_response("index.html")
+
+
+@app.get("/script.js")
+def script_asset() -> FileResponse:
+    return _static_file_response("script.js")
+
+
+@app.get("/styles.css")
+def styles_asset() -> FileResponse:
+    return _static_file_response("styles.css")
 
 
 @app.get("/api")
