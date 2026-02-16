@@ -1,4 +1,9 @@
 {
+  "functions": {
+    "api/index.py": {
+      "excludeFiles": "{.venv/**,**/__pycache__/**,.git/**,uv.lock,README.md,LICENSE}"
+    }
+  },
   "rewrites": [
     {
       "source": "/api/(.*)",

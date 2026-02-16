@@ -14,7 +14,7 @@ Business Intelligence MVP that explains why portfolio credit risk changed betwee
 - Vercel routing config:
   - `vercel.json`
 
-`app.py` is the legacy Streamlit app and is not required for Vercel runtime.
+Legacy Streamlit UI was removed from this branch to keep Vercel packaging minimal.
 
 ## What The App Does
 - Loads deterministic synthetic credit data (100 rows).

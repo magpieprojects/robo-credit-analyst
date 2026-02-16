@@ -3,7 +3,7 @@
 .venv
 __pycache__
 api/__pycache__
-app.py
 uv.lock
+pyproject.toml
 README.md
 LICENSE
