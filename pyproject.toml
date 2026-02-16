@@ -3,7 +3,9 @@ name = "robo-credit-analyst"
 version = "0.1.0"
 requires-python = ">=3.13"
 dependencies = [
+    "fastapi>=0.129.0",
     "openai>=2.21.0",
     "pandas>=2.3.3",
     "streamlit>=1.54.0",
+    "uvicorn>=0.40.0",
 ]

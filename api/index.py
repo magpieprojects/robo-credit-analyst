@@ -1,0 +1,99 @@
+from typing import Any
+
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+
+from credit_engine import (
+    ASSET_CLASSES,
+    DEFAULT_GEMINI_MODEL,
+    DEFAULT_OPENAI_MODEL,
+    GEMINI_PROVIDER,
+    OPENAI_PROVIDER,
+    discover_available_models,
+    load_risk_data,
+    run_analysis,
+    serialize_analysis_result,
+)
+
+app = FastAPI(title="Credit Portfolio AI Analyst API")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+class ModelsRequest(BaseModel):
+    provider: str = Field(default=OPENAI_PROVIDER)
+    api_key: str = Field(min_length=1)
+
+
+class AnalyzeRequest(BaseModel):
+    provider: str = Field(default=OPENAI_PROVIDER)
+    api_key: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+    seed: int = 42
+
+
+def _normalize_provider(provider: str) -> str:
+    cleaned = provider.strip()
+    if cleaned in {OPENAI_PROVIDER, GEMINI_PROVIDER}:
+        return cleaned
+    raise ValueError(f"Unsupported provider: {provider}")
+
+
+@app.get("/health")
+@app.get("/api/health")
+def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.get("/data")
+@app.get("/api/data")
+def data(seed: int = 42) -> dict[str, Any]:
+    df = load_risk_data(seed=seed)
+    return {
+        "rows": df.to_dict(orient="records"),
+        "metadata": {
+            "reporting_dates": sorted(df["reporting_date"].unique().tolist()),
+            "ratings": sorted(df["rating"].unique().tolist()),
+            "asset_classes": [item for item in ASSET_CLASSES if item in set(df["asset_class"])],
+        },
+    }
+
+
+@app.post("/models")
+@app.post("/api/models")
+def models(payload: ModelsRequest) -> dict[str, Any]:
+    try:
+        provider = _normalize_provider(payload.provider)
+        model_ids = discover_available_models(
+            api_key=payload.api_key.strip(),
+            provider=provider,
+        )
+        default_model = (
+            DEFAULT_OPENAI_MODEL if provider == OPENAI_PROVIDER else DEFAULT_GEMINI_MODEL
+        )
+        selected_default = default_model if default_model in model_ids else model_ids[0]
+        return {"provider": provider, "models": model_ids, "default_model": selected_default}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/analyze")
+@app.post("/api/analyze")
+def analyze(payload: AnalyzeRequest) -> dict[str, Any]:
+    try:
+        provider = _normalize_provider(payload.provider)
+        result = run_analysis(
+            provider=provider,
+            api_key=payload.api_key.strip(),
+            model=payload.model.strip(),
+            seed=payload.seed,
+        )
+        return serialize_analysis_result(result)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
