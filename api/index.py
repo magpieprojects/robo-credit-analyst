@@ -66,13 +66,16 @@ def health() -> dict[str, str]:
 @app.get("/data")
 @app.get("/api/data")
 def data(seed: int = 42) -> dict[str, Any]:
-    df = load_risk_data(seed=seed)
+    rows = load_risk_data(seed=seed)
+    reporting_dates = sorted({str(row["reporting_date"]) for row in rows})
+    ratings = sorted({str(row["rating"]) for row in rows})
+    asset_classes = [item for item in ASSET_CLASSES if item in {str(row["asset_class"]) for row in rows}]
     return {
-        "rows": df.to_dict(orient="records"),
+        "rows": rows,
         "metadata": {
-            "reporting_dates": sorted(df["reporting_date"].unique().tolist()),
-            "ratings": sorted(df["rating"].unique().tolist()),
-            "asset_classes": [item for item in ASSET_CLASSES if item in set(df["asset_class"])],
+            "reporting_dates": reporting_dates,
+            "ratings": ratings,
+            "asset_classes": asset_classes,
         },
     }
 

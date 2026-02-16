@@ -38,9 +38,10 @@ Business Intelligence MVP that explains why portfolio credit risk changed betwee
 Defined in `requirements.txt`:
 - `fastapi`
 - `openai`
-- `pandas`
 
 This dependency set is intentionally minimal for Vercel function size constraints.
+
+Deployment packaging is further reduced via `.vercelignore` (for example excluding `app.py`, `.venv`, and `uv.lock`).
 
 ## Local Development
 1. Install dependencies:

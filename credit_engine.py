@@ -4,7 +4,6 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Any
 
-import pandas as pd
 from openai import OpenAI
 
 T0_DATE = "2024-01-31"
@@ -343,6 +342,19 @@ Write one sentence explaining why portfolio PD changed.
         return self._call(prompt)
 
 
+def _query_rows(
+    connection: sqlite3.Connection,
+    sql: str,
+    params: list[Any] | None = None,
+) -> list[dict[str, Any]]:
+    cursor = connection.execute(sql, params or [])
+    return [dict(row) for row in cursor.fetchall()]
+
+
+def _to_float(value: Any) -> float:
+    return float(value) if value is not None else 0.0
+
+
 class CreditAnalystAgent:
     def __init__(
         self,
@@ -362,24 +374,26 @@ class CreditAnalystAgent:
     def _log(self, message: str) -> None:
         self.logs.append(message)
 
-    def _run_sql(self, raw_sql: str) -> pd.DataFrame:
+    def _run_model_sql(self, raw_sql: str) -> tuple[str, list[dict[str, Any]]]:
         safe_sql = _validate_sql(raw_sql)
-        return pd.read_sql_query(safe_sql, self.connection)
+        rows = _query_rows(self.connection, safe_sql)
+        return safe_sql, rows
 
     def _step1_portfolio_trigger(self) -> dict[str, Any]:
         self._log("[Step 1] Analyzing Overall Portfolio...")
-        sql = self.reasoner.generate_portfolio_sql(
+        raw_sql = self.reasoner.generate_portfolio_sql(
             self.schema_metadata, self.t0_date, self.t1_date
         )
-        df = self._run_sql(sql)
-        if df.empty or "reporting_date" not in df.columns or "wapd" not in df.columns:
-            raise ValueError("Portfolio SQL did not return required columns.")
+        safe_sql, rows = self._run_model_sql(raw_sql)
+        if not rows:
+            raise ValueError("Portfolio SQL returned no rows.")
 
-        wapd_map = {
-            str(row["reporting_date"]): float(row["wapd"])
-            for _, row in df.iterrows()
-            if pd.notna(row["wapd"])
-        }
+        wapd_map: dict[str, float] = {}
+        for row in rows:
+            if "reporting_date" not in row or "wapd" not in row:
+                raise ValueError("Portfolio SQL did not return required columns.")
+            wapd_map[str(row["reporting_date"])] = _to_float(row["wapd"])
+
         if self.t0_date not in wapd_map or self.t1_date not in wapd_map:
             raise ValueError("Portfolio SQL did not return both reporting dates.")
 
@@ -387,86 +401,101 @@ class CreditAnalystAgent:
         wapd_t1 = wapd_map[self.t1_date]
         diff = wapd_t1 - wapd_t0
         self._log(f"   -> Found deviation of {diff:+.2%}")
-
         return {
-            "sql": _validate_sql(sql),
+            "sql": safe_sql,
             "wapd_t0": wapd_t0,
             "wapd_t1": wapd_t1,
             "diff": diff,
-            "raw_df": df,
+            "raw_rows": rows,
         }
 
     def _step2_customer_attribution(self) -> dict[str, Any]:
         self._log("[Step 2] Drilling down to Counterparty level...")
-        sql = self.reasoner.generate_customer_drill_down_sql(
+        raw_sql = self.reasoner.generate_customer_drill_down_sql(
             self.schema_metadata, self.t0_date, self.t1_date
         )
-        df = self._run_sql(sql)
+        safe_sql, all_rows = self._run_model_sql(raw_sql)
+        if not all_rows:
+            raise ValueError("Drill-down SQL returned no rows.")
 
         required_columns = {"customer_id", "reporting_date", "pd", "exposure"}
-        if not required_columns.issubset(set(df.columns)):
-            raise ValueError("Drill-down SQL did not return required columns.")
+        for row in all_rows:
+            if not required_columns.issubset(set(row.keys())):
+                raise ValueError("Drill-down SQL did not return required columns.")
 
-        df = df[df["reporting_date"].isin([self.t0_date, self.t1_date])].copy()
-        if df.empty:
+        rows = [
+            row
+            for row in all_rows
+            if str(row["reporting_date"]) in {self.t0_date, self.t1_date}
+        ]
+        if not rows:
             raise ValueError("Drill-down SQL returned no rows for T0/T1.")
 
-        pivot = df.pivot_table(
-            index="customer_id",
-            columns="reporting_date",
-            values=["pd", "exposure"],
-            aggfunc="first",
-        )
-        required_multi_columns = {
-            ("pd", self.t0_date),
-            ("pd", self.t1_date),
-            ("exposure", self.t0_date),
-            ("exposure", self.t1_date),
-        }
-        if not required_multi_columns.issubset(set(pivot.columns)):
-            raise ValueError("Cannot compute attribution because some date columns are missing.")
-
-        attribution_df = pd.DataFrame(
-            {
-                "customer_id": pivot.index,
-                "pd_t0": pivot[("pd", self.t0_date)].astype(float),
-                "pd_t1": pivot[("pd", self.t1_date)].astype(float),
-                "exposure_t0": pivot[("exposure", self.t0_date)].astype(float),
-                "exposure_t1": pivot[("exposure", self.t1_date)].astype(float),
+        by_customer: dict[str, dict[str, dict[str, float]]] = {}
+        for row in rows:
+            customer_id = str(row["customer_id"])
+            report_date = str(row["reporting_date"])
+            by_customer.setdefault(customer_id, {})
+            by_customer[customer_id][report_date] = {
+                "pd": _to_float(row["pd"]),
+                "exposure": _to_float(row["exposure"]),
             }
-        ).reset_index(drop=True)
 
-        total_exposure_t0 = float(attribution_df["exposure_t0"].sum())
-        total_exposure_t1 = float(attribution_df["exposure_t1"].sum())
+        attribution_rows: list[dict[str, Any]] = []
+        total_exposure_t0 = 0.0
+        total_exposure_t1 = 0.0
+
+        for customer_data in by_customer.values():
+            if self.t0_date in customer_data:
+                total_exposure_t0 += customer_data[self.t0_date]["exposure"]
+            if self.t1_date in customer_data:
+                total_exposure_t1 += customer_data[self.t1_date]["exposure"]
+
         if total_exposure_t0 == 0 or total_exposure_t1 == 0:
             raise ValueError("Total exposure is zero; cannot compute weighted contribution.")
 
-        attribution_df["term_t0"] = (
-            attribution_df["pd_t0"] * attribution_df["exposure_t0"] / total_exposure_t0
-        )
-        attribution_df["term_t1"] = (
-            attribution_df["pd_t1"] * attribution_df["exposure_t1"] / total_exposure_t1
-        )
-        attribution_df["contribution"] = attribution_df["term_t1"] - attribution_df["term_t0"]
-        attribution_df["abs_contribution"] = attribution_df["contribution"].abs()
-        attribution_df = attribution_df.sort_values(
-            by="abs_contribution", ascending=False
-        ).reset_index(drop=True)
+        for customer_id, customer_data in by_customer.items():
+            if self.t0_date not in customer_data or self.t1_date not in customer_data:
+                continue
+            pd_t0 = customer_data[self.t0_date]["pd"]
+            pd_t1 = customer_data[self.t1_date]["pd"]
+            exposure_t0 = customer_data[self.t0_date]["exposure"]
+            exposure_t1 = customer_data[self.t1_date]["exposure"]
+            term_t0 = pd_t0 * exposure_t0 / total_exposure_t0
+            term_t1 = pd_t1 * exposure_t1 / total_exposure_t1
+            contribution = term_t1 - term_t0
+            attribution_rows.append(
+                {
+                    "customer_id": customer_id,
+                    "pd_t0": pd_t0,
+                    "pd_t1": pd_t1,
+                    "exposure_t0": exposure_t0,
+                    "exposure_t1": exposure_t1,
+                    "term_t0": term_t0,
+                    "term_t1": term_t1,
+                    "contribution": contribution,
+                    "abs_contribution": abs(contribution),
+                }
+            )
 
-        top_customer = str(attribution_df.loc[0, "customer_id"])
+        if not attribution_rows:
+            raise ValueError("No attribution rows available after T0/T1 alignment.")
+
+        attribution_rows.sort(key=lambda row: row["abs_contribution"], reverse=True)
+        top_customer = str(attribution_rows[0]["customer_id"])
         self._log(f"   -> Identified '{top_customer}' as primary driver.")
 
         return {
-            "sql": _validate_sql(sql),
-            "attribution_df": attribution_df,
-            "raw_df": df,
+            "sql": safe_sql,
+            "attribution_rows": attribution_rows,
+            "raw_rows": rows,
             "top_customer": top_customer,
-            "contribution_sum": float(attribution_df["contribution"].sum()),
+            "contribution_sum": sum(_to_float(row["contribution"]) for row in attribution_rows),
         }
 
     def _step3_root_cause_summary(self, top_customer: str) -> dict[str, Any]:
         self._log("[Step 3] Analyzing Root Cause...")
-        details_sql = """
+        details_sql_template = """
             SELECT customer_id, rating, pd, exposure, asset_class, reporting_date
             FROM risk_data
             WHERE customer_id = ?
@@ -474,19 +503,21 @@ class CreditAnalystAgent:
             ORDER BY reporting_date
         """
         details_params = [top_customer, self.t0_date, self.t1_date]
-        details_df = pd.read_sql_query(details_sql, self.connection, params=details_params)
-        if len(details_df) != 2:
+        details_rows = _query_rows(self.connection, details_sql_template, details_params)
+        if len(details_rows) != 2:
             raise ValueError("Top mover details are incomplete for T0/T1.")
 
-        t0_row = details_df[details_df["reporting_date"] == self.t0_date].iloc[0]
-        t1_row = details_df[details_df["reporting_date"] == self.t1_date].iloc[0]
+        row_t0 = next((row for row in details_rows if row["reporting_date"] == self.t0_date), None)
+        row_t1 = next((row for row in details_rows if row["reporting_date"] == self.t1_date), None)
+        if not row_t0 or not row_t1:
+            raise ValueError("Top mover details do not contain both dates.")
 
-        old_rating = str(t0_row["rating"])
-        new_rating = str(t1_row["rating"])
-        old_pd = float(t0_row["pd"])
-        new_pd = float(t1_row["pd"])
-        old_exposure = float(t0_row["exposure"])
-        new_exposure = float(t1_row["exposure"])
+        old_rating = str(row_t0["rating"])
+        new_rating = str(row_t1["rating"])
+        old_pd = _to_float(row_t0["pd"])
+        new_pd = _to_float(row_t1["pd"])
+        old_exposure = _to_float(row_t0["exposure"])
+        new_exposure = _to_float(row_t1["exposure"])
 
         rating_note = "No rating change"
         if old_rating != new_rating:
@@ -535,8 +566,8 @@ class CreditAnalystAgent:
 
         return {
             "summary": summary,
-            "details_sql": _compile_param_sql(details_sql, details_params),
-            "details_df": details_df,
+            "details_sql": _compile_param_sql(details_sql_template, details_params),
+            "details_rows": details_rows,
             "rating_change": rating_note,
             "pd_change": (old_pd, new_pd),
             "exposure_change": (old_exposure, new_exposure),
@@ -546,7 +577,7 @@ class CreditAnalystAgent:
         step1 = self._step1_portfolio_trigger()
         result: dict[str, Any] = {"logs": self.logs, "step1": step1, "summary": ""}
 
-        if abs(step1["diff"]) == 0:
+        if abs(_to_float(step1["diff"])) == 0:
             summary = "No weighted-average PD change detected across the reporting dates."
             self._log(f'[Final Report] "{summary}"')
             result["summary"] = summary
@@ -568,6 +599,7 @@ class CreditAnalystAgent:
 def build_in_memory_db(seed: int = 42) -> sqlite3.Connection:
     rng = random.Random(seed)
     connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
     cursor = connection.cursor()
     cursor.execute(
         """
@@ -598,16 +630,8 @@ def build_in_memory_db(seed: int = 42) -> sqlite3.Connection:
         rating_index_t1 = min(max(rating_index_t0 + rating_shift, 0), len(RATING_SCALE) - 1)
         rating_t1 = RATING_SCALE[rating_index_t1]
 
-        pd_t0 = _clamp(
-            RATING_TO_PD[rating_t0] + rng.uniform(-0.0015, 0.0015),
-            0.0005,
-            0.999,
-        )
-        pd_t1 = _clamp(
-            RATING_TO_PD[rating_t1] + rng.uniform(-0.0015, 0.0015),
-            0.0005,
-            0.999,
-        )
+        pd_t0 = _clamp(RATING_TO_PD[rating_t0] + rng.uniform(-0.0015, 0.0015), 0.0005, 0.999)
+        pd_t1 = _clamp(RATING_TO_PD[rating_t1] + rng.uniform(-0.0015, 0.0015), 0.0005, 0.999)
 
         exposure_t0 = rng.uniform(120_000.0, 650_000.0)
         exposure_t1 = exposure_t0 * rng.uniform(0.97, 1.03)
@@ -646,20 +670,20 @@ def build_in_memory_db(seed: int = 42) -> sqlite3.Connection:
     return connection
 
 
-def load_risk_data(seed: int = 42) -> pd.DataFrame:
+def load_risk_data(seed: int = 42) -> list[dict[str, Any]]:
     connection = build_in_memory_db(seed=seed)
     try:
-        df = pd.read_sql_query(
+        rows = _query_rows(
+            connection,
             """
             SELECT customer_id, rating, pd, exposure, asset_class, reporting_date
             FROM risk_data
             ORDER BY reporting_date, customer_id
-            """,
-            connection,
+            """.strip(),
         )
     finally:
         connection.close()
-    return df
+    return rows
 
 
 def run_analysis(provider: str, api_key: str, model: str, seed: int = 42) -> dict[str, Any]:
@@ -678,10 +702,6 @@ def run_analysis(provider: str, api_key: str, model: str, seed: int = 42) -> dic
         connection.close()
 
 
-def _records(df: pd.DataFrame) -> list[dict[str, Any]]:
-    return df.to_dict(orient="records")
-
-
 def serialize_analysis_result(result: dict[str, Any]) -> dict[str, Any]:
     output: dict[str, Any] = {
         "logs": result.get("logs", []),
@@ -695,7 +715,7 @@ def serialize_analysis_result(result: dict[str, Any]) -> dict[str, Any]:
             "wapd_t0": step1["wapd_t0"],
             "wapd_t1": step1["wapd_t1"],
             "diff": step1["diff"],
-            "raw_rows": _records(step1["raw_df"]),
+            "raw_rows": step1["raw_rows"],
         }
 
     step2 = result.get("step2")
@@ -704,8 +724,8 @@ def serialize_analysis_result(result: dict[str, Any]) -> dict[str, Any]:
             "sql": step2["sql"],
             "top_customer": step2["top_customer"],
             "contribution_sum": step2["contribution_sum"],
-            "raw_rows": _records(step2["raw_df"]),
-            "attribution_rows": _records(step2["attribution_df"]),
+            "raw_rows": step2["raw_rows"],
+            "attribution_rows": step2["attribution_rows"],
         }
 
     step3 = result.get("step3")
@@ -713,7 +733,7 @@ def serialize_analysis_result(result: dict[str, Any]) -> dict[str, Any]:
         output["step3"] = {
             "summary": step3["summary"],
             "details_sql": step3["details_sql"],
-            "details_rows": _records(step3["details_df"]),
+            "details_rows": step3["details_rows"],
             "rating_change": step3["rating_change"],
             "pd_change": list(step3["pd_change"]),
             "exposure_change": list(step3["exposure_change"]),

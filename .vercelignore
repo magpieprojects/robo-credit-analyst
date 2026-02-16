@@ -1,0 +1,9 @@
+.git
+.gitignore
+.venv
+__pycache__
+api/__pycache__
+app.py
+uv.lock
+README.md
+LICENSE
