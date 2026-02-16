@@ -1,3 +1,4 @@
+import os
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
@@ -26,14 +27,7 @@ app.add_middleware(
 )
 
 
-class ModelsRequest(BaseModel):
-    provider: str = Field(default=OPENAI_PROVIDER)
-    api_key: str = Field(min_length=1)
-
-
 class AnalyzeRequest(BaseModel):
-    provider: str = Field(default=OPENAI_PROVIDER)
-    api_key: str = Field(min_length=1)
     model: str = Field(min_length=1)
     seed: int = 42
 
@@ -43,6 +37,24 @@ def _normalize_provider(provider: str) -> str:
     if cleaned in {OPENAI_PROVIDER, GEMINI_PROVIDER}:
         return cleaned
     raise ValueError(f"Unsupported provider: {provider}")
+
+
+def _server_provider() -> str:
+    configured = os.getenv("LLM_PROVIDER", OPENAI_PROVIDER)
+    return _normalize_provider(configured)
+
+
+def _server_api_key(provider: str) -> str:
+    if provider == GEMINI_PROVIDER:
+        api_key = os.getenv("GEMINI_API_KEY") or os.getenv("LLM_API_KEY")
+    else:
+        api_key = os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY")
+
+    if not api_key:
+        if provider == GEMINI_PROVIDER:
+            raise ValueError("Missing GEMINI_API_KEY (or fallback LLM_API_KEY) environment variable.")
+        raise ValueError("Missing OPENAI_API_KEY (or fallback LLM_API_KEY) environment variable.")
+    return api_key
 
 
 @app.get("/health")
@@ -65,13 +77,14 @@ def data(seed: int = 42) -> dict[str, Any]:
     }
 
 
-@app.post("/models")
-@app.post("/api/models")
-def models(payload: ModelsRequest) -> dict[str, Any]:
+@app.get("/models")
+@app.get("/api/models")
+def models() -> dict[str, Any]:
     try:
-        provider = _normalize_provider(payload.provider)
+        provider = _server_provider()
+        api_key = _server_api_key(provider)
         model_ids = discover_available_models(
-            api_key=payload.api_key.strip(),
+            api_key=api_key,
             provider=provider,
         )
         default_model = (
@@ -87,10 +100,11 @@ def models(payload: ModelsRequest) -> dict[str, Any]:
 @app.post("/api/analyze")
 def analyze(payload: AnalyzeRequest) -> dict[str, Any]:
     try:
-        provider = _normalize_provider(payload.provider)
+        provider = _server_provider()
+        api_key = _server_api_key(provider)
         result = run_analysis(
             provider=provider,
-            api_key=payload.api_key.strip(),
+            api_key=api_key,
             model=payload.model.strip(),
             seed=payload.seed,
         )

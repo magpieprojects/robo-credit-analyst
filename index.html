@@ -86,22 +86,19 @@
           <h3>LLM Analysis Controls</h3>
           <div class="controls-grid">
             <div class="control">
-              <label for="provider">Provider</label>
-              <select id="provider">
-                <option>OpenAI</option>
-                <option>Google Gemini</option>
-              </select>
-            </div>
-            <div class="control">
-              <label for="apiKey">API Key</label>
-              <input id="apiKey" type="password" placeholder="Enter API key" />
+              <label>Server Provider</label>
+              <input id="providerDisplay" type="text" value="(loading...)" readonly />
             </div>
             <div class="control">
               <label for="model">Available Models</label>
               <select id="model"></select>
             </div>
-            <div class="control" style="justify-content: end">
+            <div class="control">
+              <label>Model Discovery</label>
               <button id="loadModelsBtn">Load Models</button>
+            </div>
+            <div class="control" style="justify-content: end">
+              <label>Analysis</label>
               <button id="runBtn" class="primary">Run Analysis</button>
             </div>
           </div>

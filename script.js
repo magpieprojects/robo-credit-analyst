@@ -31,6 +31,7 @@ const state = {
   aggregations: ["row_count", "sum_exposure", "weighted_avg_pd"],
   filteredData: [],
   availableModels: [],
+  serverProvider: "",
   analysisResult: null,
 };
 
@@ -394,25 +395,19 @@ function populateModelSelect(models, defaultModel) {
 async function loadModels() {
   setError("");
   setStatus("");
-  const provider = document.getElementById("provider").value;
-  const apiKey = document.getElementById("apiKey").value.trim();
-  if (!apiKey) {
-    setError("Please enter an API key before loading models.");
-    return;
-  }
   setStatus("Checking available models...");
-  const response = await fetch(apiUrl("/api/models"), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ provider, api_key: apiKey }),
-  });
+  const response = await fetch(apiUrl("/api/models"));
   const payload = await response.json();
   if (!response.ok) {
     throw new Error(payload.detail || "Unable to load models.");
   }
   state.availableModels = payload.models || [];
+  state.serverProvider = payload.provider || "";
+  document.getElementById("providerDisplay").value = state.serverProvider || "(unknown)";
   populateModelSelect(state.availableModels, payload.default_model);
-  setStatus(`Loaded ${state.availableModels.length} available model(s).`);
+  setStatus(
+    `Loaded ${state.availableModels.length} available model(s) from ${state.serverProvider}.`
+  );
 }
 
 function resultsTable(title, rows) {
@@ -565,16 +560,10 @@ function renderStepByStep() {
 
 async function runAnalysis() {
   setError("");
-  const provider = document.getElementById("provider").value;
-  const apiKey = document.getElementById("apiKey").value.trim();
   const model = document.getElementById("model").value;
 
-  if (!apiKey) {
-    setError("Please enter an API key.");
-    return;
-  }
   if (!model) {
-    setError("Please load and select a model before running analysis.");
+    setError("Please load models and select one before running analysis.");
     return;
   }
 
@@ -582,7 +571,7 @@ async function runAnalysis() {
   const response = await fetch(apiUrl("/api/analyze"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ provider, api_key: apiKey, model, seed: 42 }),
+    body: JSON.stringify({ model, seed: 42 }),
   });
   const payload = await response.json();
   if (!response.ok) {
@@ -596,13 +585,6 @@ async function runAnalysis() {
 }
 
 function bindLlmControls() {
-  document.getElementById("provider").addEventListener("change", () => {
-    setError("");
-    setStatus("");
-    state.availableModels = [];
-    document.getElementById("model").innerHTML = "";
-  });
-
   document.getElementById("loadModelsBtn").addEventListener("click", async () => {
     try {
       await loadModels();
@@ -634,7 +616,8 @@ async function init() {
     await fetchData();
     initFilterControls();
     renderDataExplorer();
-    setStatus("Data loaded.");
+    await loadModels();
+    setStatus("Data and models loaded.");
   } catch (err) {
     setError(err.message || String(err));
     setStatus("");
