@@ -63,6 +63,13 @@ OPENAI_PROVIDER = "OpenAI"
 GEMINI_PROVIDER = "Google Gemini"
 OPENAI_MODEL_PREFIX_ALLOWLIST = ("gpt-",)
 GEMINI_MODEL_PREFIX_ALLOWLIST = ("gemini-",)
+OPENAI_MODEL_TOKEN_DENYLIST = (
+    "audio",
+    "image",
+    "realtime",
+    "transcribe",
+    "tts",
+)
 DEFAULT_OPENAI_MODEL = "gpt-4"
 DEFAULT_GEMINI_MODEL = "gemini-flash-latest"
 GEMINI_OPENAI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
@@ -137,6 +144,13 @@ def _build_openai_client(api_key: str, provider: str) -> OpenAI:
     return OpenAI(api_key=api_key)
 
 
+def _normalize_model_id(model_id: str, provider: str) -> str:
+    cleaned = model_id.strip()
+    if provider == GEMINI_PROVIDER and cleaned.startswith("models/"):
+        cleaned = cleaned.split("/", 1)[1]
+    return cleaned
+
+
 def _extract_model_ids(model_list_response: Any) -> list[str]:
     raw_model_ids: list[str] = []
     for model_obj in getattr(model_list_response, "data", []):
@@ -168,6 +182,7 @@ def discover_available_models(api_key: str, provider: str) -> list[str]:
             model_id
             for model_id in unique_model_ids
             if model_id.startswith(OPENAI_MODEL_PREFIX_ALLOWLIST)
+            and not any(token in model_id for token in OPENAI_MODEL_TOKEN_DENYLIST)
         ]
         if not valid_models:
             raise ValueError(
@@ -227,12 +242,14 @@ class OpenAIReasoner:
     provider: str = OPENAI_PROVIDER
 
     def __post_init__(self) -> None:
+        self.model = _normalize_model_id(self.model, self.provider)
         self.client = _build_openai_client(api_key=self.api_key, provider=self.provider)
 
     def _call(self, prompt: str) -> str:
+        model_id = _normalize_model_id(self.model, self.provider)
         if self.provider == GEMINI_PROVIDER:
             response = self.client.chat.completions.create(
-                model=self.model,
+                model=model_id,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=self.temperature,
             )
@@ -246,25 +263,47 @@ class OpenAIReasoner:
                 return content.strip()
             raise ValueError("Google Gemini returned no readable text output.")
 
-        response = self.client.responses.create(
-            model=self.model,
-            input=prompt,
-            temperature=self.temperature,
-        )
-        text = getattr(response, "output_text", "")
-        if text:
-            return text.strip()
+        try:
+            response = self.client.responses.create(
+                model=model_id,
+                input=prompt,
+                temperature=self.temperature,
+            )
+            text = getattr(response, "output_text", "")
+            if text:
+                return text.strip()
 
-        chunks: list[str] = []
-        for output in getattr(response, "output", []):
-            for content in getattr(output, "content", []):
-                maybe_text = getattr(content, "text", None)
-                if maybe_text:
-                    chunks.append(maybe_text)
-        combined = "\n".join(chunks).strip()
-        if not combined:
-            raise ValueError("OpenAI returned no readable text output.")
-        return combined
+            chunks: list[str] = []
+            for output in getattr(response, "output", []):
+                for content in getattr(output, "content", []):
+                    maybe_text = getattr(content, "text", None)
+                    if maybe_text:
+                        chunks.append(maybe_text)
+            combined = "\n".join(chunks).strip()
+            if combined:
+                return combined
+        except Exception:
+            pass
+
+        try:
+            response = self.client.chat.completions.create(
+                model=model_id,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=self.temperature,
+            )
+            choices = getattr(response, "choices", [])
+            if not choices:
+                raise ValueError("OpenAI Chat Completions returned no choices.")
+            message = getattr(choices[0], "message", None)
+            content = getattr(message, "content", None)
+            if isinstance(content, str) and content.strip():
+                return content.strip()
+            raise ValueError("OpenAI Chat Completions returned no readable text output.")
+        except Exception as exc:
+            raise ValueError(
+                f"LLM call failed for model '{model_id}'. "
+                "Try loading models again and selecting another model."
+            ) from exc
 
     def generate_portfolio_sql(
         self,

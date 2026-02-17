@@ -371,11 +371,17 @@ function setupTabs() {
 
 async function fetchData() {
   const response = await fetch(apiUrl("/api/data"));
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Failed to load data: ${body}`);
+  const rawText = await response.text();
+  let payload = {};
+  try {
+    payload = rawText ? JSON.parse(rawText) : {};
+  } catch {
+    payload = {};
   }
-  const payload = await response.json();
+  if (!response.ok) {
+    const detail = payload.detail || rawText || "Unknown API error.";
+    throw new Error(`Failed to load data (${response.status}): ${detail}`);
+  }
   state.rawData = payload.rows || [];
   state.metadata = payload.metadata || state.metadata;
 }
@@ -397,9 +403,16 @@ async function loadModels() {
   setStatus("");
   setStatus("Checking available models...");
   const response = await fetch(apiUrl("/api/models"));
-  const payload = await response.json();
+  const rawText = await response.text();
+  let payload = {};
+  try {
+    payload = rawText ? JSON.parse(rawText) : {};
+  } catch {
+    payload = {};
+  }
   if (!response.ok) {
-    throw new Error(payload.detail || "Unable to load models.");
+    const detail = payload.detail || rawText || "Unable to load models.";
+    throw new Error(`Unable to load models (${response.status}): ${detail}`);
   }
   state.availableModels = payload.models || [];
   state.serverProvider = payload.provider || "";
@@ -573,9 +586,16 @@ async function runAnalysis() {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ model, seed: 42 }),
   });
-  const payload = await response.json();
+  const rawText = await response.text();
+  let payload = {};
+  try {
+    payload = rawText ? JSON.parse(rawText) : {};
+  } catch {
+    payload = {};
+  }
   if (!response.ok) {
-    throw new Error(payload.detail || "Analysis failed.");
+    const detail = payload.detail || rawText || "Analysis failed.";
+    throw new Error(`Analysis failed (${response.status}): ${detail}`);
   }
 
   state.analysisResult = payload;
