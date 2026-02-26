@@ -1,10 +1,11 @@
+import os
 import random
 import re
 import sqlite3
 from dataclasses import dataclass
 from typing import Any
 
-from openai import OpenAI
+from openai import AzureOpenAI, OpenAI
 
 T0_DATE = "2024-01-31"
 T1_DATE = "2024-02-29"
@@ -61,6 +62,7 @@ BANNED_SQL_TOKENS = (
 
 OPENAI_PROVIDER = "OpenAI"
 GEMINI_PROVIDER = "Google Gemini"
+AZURE_OPENAI_PROVIDER = "Azure OpenAI"
 OPENAI_MODEL_PREFIX_ALLOWLIST = ("gpt-",)
 GEMINI_MODEL_PREFIX_ALLOWLIST = ("gemini-",)
 OPENAI_MODEL_TOKEN_DENYLIST = (
@@ -72,7 +74,10 @@ OPENAI_MODEL_TOKEN_DENYLIST = (
 )
 DEFAULT_OPENAI_MODEL = "gpt-4"
 DEFAULT_GEMINI_MODEL = "gemini-flash-latest"
+DEFAULT_AZURE_OPENAI_MODEL = "gpt-4.1"
 GEMINI_OPENAI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+DEFAULT_LLM_TIMEOUT_SECONDS = 15.0
+DEFAULT_LLM_MAX_RETRIES = 0
 
 
 def _clamp(value: float, lower: float, upper: float) -> float:
@@ -138,10 +143,66 @@ def _compile_param_sql(sql: str, params: list[Any]) -> str:
     return "".join(rendered_parts).strip()
 
 
-def _build_openai_client(api_key: str, provider: str) -> OpenAI:
+def _azure_openai_config() -> tuple[str, str]:
+    endpoint = (os.getenv("AZURE_OPENAI_ENDPOINT") or "").strip()
+    api_version = (os.getenv("AZURE_OPENAI_API_VERSION") or "").strip()
+    if not endpoint:
+        raise ValueError(
+            "Missing AZURE_OPENAI_ENDPOINT environment variable for Azure OpenAI provider."
+        )
+    if not api_version:
+        raise ValueError(
+            "Missing AZURE_OPENAI_API_VERSION environment variable for Azure OpenAI provider."
+        )
+    return endpoint, api_version
+
+
+def _llm_timeout_seconds() -> float:
+    raw_value = (os.getenv("LLM_TIMEOUT_SECONDS") or "").strip()
+    if not raw_value:
+        return DEFAULT_LLM_TIMEOUT_SECONDS
+    try:
+        timeout_seconds = float(raw_value)
+    except ValueError:
+        return DEFAULT_LLM_TIMEOUT_SECONDS
+    return timeout_seconds if timeout_seconds > 0 else DEFAULT_LLM_TIMEOUT_SECONDS
+
+
+def _llm_max_retries() -> int:
+    raw_value = (os.getenv("LLM_MAX_RETRIES") or "").strip()
+    if not raw_value:
+        return DEFAULT_LLM_MAX_RETRIES
+    try:
+        retries = int(raw_value)
+    except ValueError:
+        return DEFAULT_LLM_MAX_RETRIES
+    return max(0, retries)
+
+
+def _build_openai_client(api_key: str, provider: str) -> Any:
+    timeout_seconds = _llm_timeout_seconds()
+    max_retries = _llm_max_retries()
     if provider == GEMINI_PROVIDER:
-        return OpenAI(api_key=api_key, base_url=GEMINI_OPENAI_BASE_URL)
-    return OpenAI(api_key=api_key)
+        return OpenAI(
+            api_key=api_key,
+            base_url=GEMINI_OPENAI_BASE_URL,
+            timeout=timeout_seconds,
+            max_retries=max_retries,
+        )
+    if provider == AZURE_OPENAI_PROVIDER:
+        endpoint, api_version = _azure_openai_config()
+        return AzureOpenAI(
+            api_key=api_key,
+            azure_endpoint=endpoint,
+            api_version=api_version,
+            timeout=timeout_seconds,
+            max_retries=max_retries,
+        )
+    return OpenAI(
+        api_key=api_key,
+        timeout=timeout_seconds,
+        max_retries=max_retries,
+    )
 
 
 def _normalize_model_id(model_id: str, provider: str) -> str:
@@ -160,7 +221,7 @@ def _extract_model_ids(model_list_response: Any) -> list[str]:
     return sorted(set(raw_model_ids))
 
 
-def _probe_chat_model(client: OpenAI, model_id: str) -> bool:
+def _probe_chat_model(client: Any, model_id: str) -> bool:
     try:
         response = client.chat.completions.create(
             model=model_id,
@@ -193,6 +254,18 @@ def discover_available_models(api_key: str, provider: str) -> list[str]:
             key=lambda model_id: (0 if model_id == DEFAULT_OPENAI_MODEL else 1, model_id)
         )
         return valid_models
+    if provider == AZURE_OPENAI_PROVIDER:
+        deployment_name = (os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT") or "").strip()
+        if not deployment_name:
+            raise ValueError(
+                "Missing AZURE_OPENAI_CHAT_DEPLOYMENT environment variable for Azure OpenAI provider."
+            )
+        if not _probe_chat_model(client, deployment_name):
+            raise ValueError(
+                f"Azure OpenAI deployment '{deployment_name}' is not available for chat completions. "
+                "Please verify deployment name and model access."
+            )
+        return [deployment_name]
 
     discovered_model_ids: list[str] = []
     try:
@@ -247,7 +320,7 @@ class OpenAIReasoner:
 
     def _call(self, prompt: str) -> str:
         model_id = _normalize_model_id(self.model, self.provider)
-        if self.provider == GEMINI_PROVIDER:
+        if self.provider in {GEMINI_PROVIDER, AZURE_OPENAI_PROVIDER}:
             response = self.client.chat.completions.create(
                 model=model_id,
                 messages=[{"role": "user", "content": prompt}],
@@ -255,13 +328,13 @@ class OpenAIReasoner:
             )
             choices = getattr(response, "choices", [])
             if not choices:
-                raise ValueError("Google Gemini returned no response choices.")
+                raise ValueError(f"{self.provider} returned no response choices.")
 
             message = getattr(choices[0], "message", None)
             content = getattr(message, "content", None)
             if isinstance(content, str) and content.strip():
                 return content.strip()
-            raise ValueError("Google Gemini returned no readable text output.")
+            raise ValueError(f"{self.provider} returned no readable text output.")
 
         try:
             response = self.client.responses.create(

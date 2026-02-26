@@ -54,17 +54,26 @@ uv sync
 uv sync --extra dev
 ```
 
-3. Start API:
+3. Create `.env` in repo root (example below):
 ```bash
-uv run uvicorn api.index:app --reload --port 8000
+LLM_PROVIDER="Azure OpenAI"
+AZURE_OPENAI_API_KEY=key
+AZURE_OPENAI_ENDPOINT=https://fndry-mp-ai-dev-gen-gwc.cognitiveservices.azure.com/
+AZURE_OPENAI_API_VERSION=2024-12-01-preview
+AZURE_OPENAI_CHAT_DEPLOYMENT=gpt-4.1
 ```
 
-4. Start static frontend in another terminal:
+4. Start API (loads `.env` automatically):
+```bash
+uv run --env-file .env uvicorn api.index:app --reload --port 8000
+```
+
+5. Start static frontend in another terminal:
 ```bash
 python -m http.server 3000
 ```
 
-5. Open:
+6. Open:
 - `http://localhost:3000` (UI)
 - `http://localhost:8000/api/health` (API health)
 
@@ -77,14 +86,33 @@ python -m http.server 3000
 4. Use root directory `.`.
 5. Keep `vercel.json` in repo root.
 6. Configure environment variables in Vercel:
-   - `LLM_PROVIDER` = `OpenAI` or `Google Gemini` (default is `OpenAI`)
+   - `LLM_PROVIDER` = `OpenAI`, `Google Gemini`, or `Azure OpenAI` (default is `OpenAI`)
    - `OPENAI_API_KEY` for OpenAI mode
    - `GEMINI_API_KEY` for Gemini mode
+   - `AZURE_OPENAI_API_KEY` for Azure OpenAI mode
+   - `AZURE_OPENAI_ENDPOINT` for Azure OpenAI mode
+   - `AZURE_OPENAI_API_VERSION` for Azure OpenAI mode
+   - `AZURE_OPENAI_CHAT_DEPLOYMENT` for Azure OpenAI mode (deployment name used for chat)
    - optional fallback: `LLM_API_KEY`
+   - optional request timeout in seconds: `LLM_TIMEOUT_SECONDS` (default `15`)
+   - optional retry count: `LLM_MAX_RETRIES` (default `0`)
 7. Deploy preview first.
 8. Promote to production when checks pass.
 
 If Vercel asks for a repository name that already exists, switch to importing the existing Git repository instead of creating a new one.
+
+## Troubleshooting: 504 `FUNCTION_INVOCATION_TIMEOUT`
+- Symptom example:
+  - `Analysis failed (504): ... FUNCTION_INVOCATION_TIMEOUT ...`
+- Cause:
+  - `/api/analyze` performs multiple sequential LLM calls; slow model/provider responses can exceed function limits.
+- Fixes already in this repo:
+  - `vercel.json` sets `api/index.py` `maxDuration` to `60`.
+  - LLM client calls now respect `LLM_TIMEOUT_SECONDS` and `LLM_MAX_RETRIES`.
+- Recommended Vercel settings:
+  - Keep `LLM_TIMEOUT_SECONDS=15`
+  - Keep `LLM_MAX_RETRIES=0`
+  - Use a lower-latency model for analysis when possible.
 
 ## Post-Deploy Checks
 1. `GET /api/health` returns `{"status":"ok"}`.

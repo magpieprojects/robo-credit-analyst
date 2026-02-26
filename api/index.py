@@ -9,6 +9,8 @@ from pydantic import BaseModel, Field
 
 from credit_engine import (
     ASSET_CLASSES,
+    AZURE_OPENAI_PROVIDER,
+    DEFAULT_AZURE_OPENAI_MODEL,
     DEFAULT_GEMINI_MODEL,
     DEFAULT_OPENAI_MODEL,
     GEMINI_PROVIDER,
@@ -55,7 +57,7 @@ class AnalyzeRequest(BaseModel):
 
 def _normalize_provider(provider: str) -> str:
     cleaned = provider.strip()
-    if cleaned in {OPENAI_PROVIDER, GEMINI_PROVIDER}:
+    if cleaned in {OPENAI_PROVIDER, GEMINI_PROVIDER, AZURE_OPENAI_PROVIDER}:
         return cleaned
     raise ValueError(f"Unsupported provider: {provider}")
 
@@ -68,12 +70,18 @@ def _server_provider() -> str:
 def _server_api_key(provider: str) -> str:
     if provider == GEMINI_PROVIDER:
         api_key = os.getenv("GEMINI_API_KEY") or os.getenv("LLM_API_KEY")
+    elif provider == AZURE_OPENAI_PROVIDER:
+        api_key = os.getenv("AZURE_OPENAI_API_KEY") or os.getenv("LLM_API_KEY")
     else:
         api_key = os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY")
 
     if not api_key:
         if provider == GEMINI_PROVIDER:
             raise ValueError("Missing GEMINI_API_KEY (or fallback LLM_API_KEY) environment variable.")
+        if provider == AZURE_OPENAI_PROVIDER:
+            raise ValueError(
+                "Missing AZURE_OPENAI_API_KEY (or fallback LLM_API_KEY) environment variable."
+            )
         raise ValueError("Missing OPENAI_API_KEY (or fallback LLM_API_KEY) environment variable.")
     return api_key
 
@@ -138,9 +146,12 @@ def models() -> dict[str, Any]:
             api_key=api_key,
             provider=provider,
         )
-        default_model = (
-            DEFAULT_OPENAI_MODEL if provider == OPENAI_PROVIDER else DEFAULT_GEMINI_MODEL
-        )
+        if provider == OPENAI_PROVIDER:
+            default_model = DEFAULT_OPENAI_MODEL
+        elif provider == GEMINI_PROVIDER:
+            default_model = DEFAULT_GEMINI_MODEL
+        else:
+            default_model = DEFAULT_AZURE_OPENAI_MODEL
         selected_default = default_model if default_model in model_ids else model_ids[0]
         return {"provider": provider, "models": model_ids, "default_model": selected_default}
     except Exception as exc:
