@@ -57,10 +57,10 @@ uv sync --extra dev
 3. Create `.env` in repo root (example below):
 ```bash
 LLM_PROVIDER="Azure OpenAI"
-AZURE_OPENAI_API_KEY=key
-AZURE_OPENAI_ENDPOINT=https://fndry-mp-ai-dev-gen-gwc.cognitiveservices.azure.com/
-AZURE_OPENAI_API_VERSION=2024-12-01-preview
-AZURE_OPENAI_CHAT_DEPLOYMENT=gpt-4.1
+AZURE_OPENAI_API_KEY="key"
+AZURE_OPENAI_ENDPOINT="https://fndry-mp-ai-dev-gen-gwc.cognitiveservices.azure.com/"
+AZURE_OPENAI_API_VERSION="2024-12-01-preview"
+AZURE_OPENAI_CHAT_DEPLOYMENT="gpt-4.1"
 ```
 
 4. Start API (loads `.env` automatically):
