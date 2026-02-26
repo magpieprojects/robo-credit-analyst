@@ -107,9 +107,13 @@ If Vercel asks for a repository name that already exists, switch to importing th
 - Cause:
   - `/api/analyze` performs multiple sequential LLM calls; slow model/provider responses can exceed function limits.
 - Fixes already in this repo:
-  - `vercel.json` sets `api/index.py` `maxDuration` to `60`.
-  - LLM client calls now respect `LLM_TIMEOUT_SECONDS` and `LLM_MAX_RETRIES`.
+  - LLM client calls respect `LLM_TIMEOUT_SECONDS` and `LLM_MAX_RETRIES`.
+- Vercel runtime duration:
+  - Configure max duration in Vercel Project Settings (Functions), not `vercel.json` `functions`,
+    if you see pattern match errors like:
+    - `The pattern "..." defined in functions doesn't match any Serverless Functions...`
 - Recommended Vercel settings:
+  - Function max duration: `60` seconds (or higher if your plan allows)
   - Keep `LLM_TIMEOUT_SECONDS=15`
   - Keep `LLM_MAX_RETRIES=0`
   - Use a lower-latency model for analysis when possible.
