@@ -58,7 +58,7 @@ uv sync --extra dev
 ```bash
 LLM_PROVIDER="Azure OpenAI"
 AZURE_OPENAI_API_KEY="key"
-AZURE_OPENAI_ENDPOINT="https://fndry-mp-ai-dev-gen-gwc.cognitiveservices.azure.com/"
+AZURE_OPENAI_ENDPOINT="endpoint"
 AZURE_OPENAI_API_VERSION="2024-12-01-preview"
 AZURE_OPENAI_CHAT_DEPLOYMENT="gpt-4.1"
 ```
