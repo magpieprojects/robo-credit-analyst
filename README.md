@@ -28,6 +28,12 @@ Legacy Streamlit UI was removed from this branch to keep Vercel packaging minima
   3. Root cause and 10-word summary
 - Displays execution logs, compiled SQL, query results, drill-down output, and final note.
 
+### The 3 Analytical Questions Answered by SQL
+The application executes a sequence of three SQL queries to explain the credit risk evolution:
+1. **Did the overall risk change? (Step 1)**: Computes the weighted average Probability of Default (WAPD) for the entire portfolio across the two reporting dates.
+2. **Who is the main driver? (Step 2)**: Drills down to the customer (counterparty) level to calculate individual risk contributions, identifying the single customer responsible for the largest mathematical shift.
+3. **What exactly happened to this driver? (Step 3)**: Fetches the complete historical risk details (rating, PD, exposure) for the identified top customer, providing the LLM with the facts needed to write a 10-word root cause summary.
+
 ## API Endpoints
 - `GET /api/health`
 - `GET /api/data`
